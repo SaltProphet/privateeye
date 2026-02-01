@@ -296,7 +296,7 @@ The application follows a modular architecture with three main modules:
 
 ### Required Permissions
 - ✅ `moe.shizuku.manager.permission.API_V23` - Shizuku API access
-- ✅ `android.permission.PROJECT_MEDIA` - Media projection
+- ⚠️ `android.permission.PROJECT_MEDIA` - Media projection (Note: This may be a non-standard permission name. Standard Android permissions typically use names like `WRITE_MEDIA_STORAGE` or require MediaProjection API setup. Should verify this permission is correct.)
 - ✅ `android.permission.POST_NOTIFICATIONS` - Notifications (Android 13+)
 - ✅ `android.permission.WRITE_EXTERNAL_STORAGE` - File storage
 - ✅ `android.permission.READ_EXTERNAL_STORAGE` - File access
