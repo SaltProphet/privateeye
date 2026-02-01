@@ -10,6 +10,13 @@
     <!-- Notification permission for Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
+    <!-- Storage permissions -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    
+    <!-- Recording permissions -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    
     <!-- Other required permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 

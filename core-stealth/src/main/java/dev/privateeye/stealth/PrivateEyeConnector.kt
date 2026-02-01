@@ -143,6 +143,55 @@ class PrivateEyeConnector @Inject constructor(
      */
     fun isConnected(): Boolean = service != null
     
+    /**
+     * Start recording with stealth capture engine
+     */
+    fun startRecording(outputPath: String, callback: RecordingCallback) {
+        try {
+            if (service == null) {
+                callback.onError("Service not connected")
+                return
+            }
+            
+            service?.startRecording(outputPath)
+            callback.onLog("[Ghost] Recording started")
+            callback.onRecordingStarted()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error starting recording", e)
+            callback.onError("Failed to start recording: ${e.message}")
+        }
+    }
+    
+    /**
+     * Stop recording
+     */
+    fun stopRecording(callback: RecordingCallback) {
+        try {
+            if (service == null) {
+                callback.onError("Service not connected")
+                return
+            }
+            
+            service?.stopRecording()
+            callback.onLog("[Ghost] Recording stopped")
+            callback.onRecordingStopped()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Error stopping recording", e)
+            callback.onError("Failed to stop recording: ${e.message}")
+        }
+    }
+    
+    /**
+     * Check if currently recording
+     */
+    fun isRecording(): Boolean {
+        return try {
+            service?.isRecording() ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+    
     // Shizuku.OnBinderReceivedListener implementation
     override fun onBinderReceived() {
         android.util.Log.i(TAG, "Shizuku binder received callback")
@@ -163,6 +212,16 @@ class PrivateEyeConnector @Inject constructor(
     interface ConnectionCallback {
         fun onConnected(service: IPrivateEyeService)
         fun onDisconnected()
+        fun onError(message: String)
+        fun onLog(message: String)
+    }
+    
+    /**
+     * Callback interface for recording events
+     */
+    interface RecordingCallback {
+        fun onRecordingStarted()
+        fun onRecordingStopped()
         fun onError(message: String)
         fun onLog(message: String)
     }

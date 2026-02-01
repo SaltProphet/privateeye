@@ -20,6 +20,21 @@ interface IPrivateEyeService {
     boolean hasShellPrivileges();
     
     /**
+     * Start recording screen with stealth capture engine
+     */
+    void startRecording(String outputPath);
+    
+    /**
+     * Stop recording screen
+     */
+    void stopRecording();
+    
+    /**
+     * Check if currently recording
+     */
+    boolean isRecording();
+    
+    /**
      * Destroy the service
      */
     void destroy();

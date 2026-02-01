@@ -51,10 +51,37 @@ class MainViewModel @Inject constructor(
         override fun onDisconnected() {
             _isShizukuConnected.value = false
             addLog("[System] Service Disconnected")
+            // Stop recording if active
+            if (_isGhostModeActive.value) {
+                _isGhostModeActive.value = false
+                addLog("[Ghost] Recording stopped due to disconnection")
+            }
         }
         
         override fun onError(message: String) {
             addLog("[Error] $message")
+        }
+        
+        override fun onLog(message: String) {
+            addLog(message)
+        }
+    }
+    
+    private val recordingCallback = object : PrivateEyeConnector.RecordingCallback {
+        override fun onRecordingStarted() {
+            addLog("[Ghost] Stealth capture engine activated")
+        }
+        
+        override fun onRecordingStopped() {
+            addLog("[Ghost] Stealth capture engine deactivated")
+        }
+        
+        override fun onError(message: String) {
+            addLog("[Error] $message")
+            // Turn off Ghost Mode on error
+            if (_isGhostModeActive.value) {
+                _isGhostModeActive.value = false
+            }
         }
         
         override fun onLog(message: String) {
@@ -82,17 +109,47 @@ class MainViewModel @Inject constructor(
     
     /**
      * Toggle Ghost Mode on/off
+     * When enabled, starts stealth screen recording
+     * When disabled, stops recording
      */
     fun toggleGhostMode() {
         viewModelScope.launch {
-            _isGhostModeActive.value = !_isGhostModeActive.value
+            if (!_isShizukuConnected.value) {
+                addLog("[Error] Cannot toggle Ghost Mode: Shizuku not connected")
+                return@launch
+            }
             
-            if (_isGhostModeActive.value) {
+            val newState = !_isGhostModeActive.value
+            _isGhostModeActive.value = newState
+            
+            if (newState) {
+                // Start recording
                 addLog("Ghost Mode ACTIVATED")
+                startRecording()
             } else {
+                // Stop recording
                 addLog("Ghost Mode DEACTIVATED")
+                stopRecording()
             }
         }
+    }
+    
+    /**
+     * Start stealth recording
+     */
+    private fun startRecording() {
+        val timestamp = System.currentTimeMillis()
+        val outputPath = "/storage/emulated/0/Download/PrivateEye/capture_$timestamp.mp4"
+        
+        addLog("[Ghost] Output: $outputPath")
+        connector.startRecording(outputPath, recordingCallback)
+    }
+    
+    /**
+     * Stop stealth recording
+     */
+    private fun stopRecording() {
+        connector.stopRecording(recordingCallback)
     }
     
     /**
