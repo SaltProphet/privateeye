@@ -1,13 +1,13 @@
 # PrivateEye - Build Instructions
 
 ## Overview
-PrivateEye is a modular Android application built with Kotlin and Jetpack Compose that provides stealth screen capture capabilities through Shizuku integration.
+PrivateEye is a professional-grade Android screen recording utility built with Kotlin and Jetpack Compose. It uses Android's MediaProjection API for high-quality screen capture with a floating overlay controller.
 
 ## Prerequisites
 - Android Studio (Arctic Fox or later)
 - Android SDK 26+
 - JDK 8 or higher
-- Shizuku app installed on target Android device
+- Android device or emulator for testing
 
 ## Project Structure
 ```
@@ -16,13 +16,18 @@ privateeye/
 │   ├── src/main/
 │   │   ├── java/dev/privateeye/
 │   │   │   ├── MainActivity.kt
-│   │   │   ├── MainScreen.kt
-│   │   │   ├── MainViewModel.kt
+│   │   │   ├── RecordingScreen.kt
+│   │   │   ├── RecordingViewModel.kt
+│   │   │   ├── MainScreen.kt (Legacy)
+│   │   │   ├── MainViewModel.kt (Legacy)
 │   │   │   ├── PrivateEyeApplication.kt
+│   │   │   ├── service/
+│   │   │   │   ├── OverlayService.kt
+│   │   │   │   └── ScreenRecordingService.kt
 │   │   │   └── ui/
 │   │   └── AndroidManifest.xml
 │   └── build.gradle.kts
-├── core-stealth/             # Shizuku integration and stealth capture
+├── core-stealth/             # Legacy Shizuku integration (deprecated)
 │   ├── src/main/
 │   │   ├── aidl/dev/privateeye/stealth/
 │   │   │   └── IPrivateEyeService.aidl
@@ -70,96 +75,120 @@ privateeye/
 ## Key Features Implemented
 
 ### 1. Modular Architecture
-- **:app** - UI module with Jetpack Compose
-- **:core-stealth** - Shizuku integration and capture engine
+- **:app** - UI module with Jetpack Compose and MediaProjection
+- **:core-stealth** - Legacy Shizuku integration (deprecated)
 - **:common** - Shared logging and utilities
 
-### 2. Shizuku Integration
-- PrivateEyeConnector implements Shizuku listeners
-- Automatic permission handling
-- Service binding with elevated privileges
-- PrivateEyeUserService runs with Shell UID (2000)
-
-### 3. Stealth Capture Engine
-- SurfaceControl-based screen capture (no MediaProjection)
-- MediaCodec H.264/AVC encoding pipeline
+### 2. MediaProjection Recording
+- ScreenRecordingService implements MediaProjection capture
+- Foreground service with notification
+- MediaCodec H.264/AVC encoding with COLOR_FormatSurface
 - MediaMuxer for MP4 container format
 - Output to `/storage/emulated/0/Download/PrivateEye/`
+
+### 3. Floating Overlay Controller
+- OverlayService provides draggable floating button
+- TYPE_APPLICATION_OVERLAY window type
+- FLAG_NOT_FOCUSABLE and FLAG_LAYOUT_IN_SCREEN flags
+- Toggle button to start/stop recording
+- Broadcast receiver integration
 
 ### 4. UI Features
 - Pure black (#000000) background with Matrix Green (#00FF00) theme
 - Terminal-style monospace console with auto-scrolling
-- Ghost Mode toggle for start/stop recording
+- Permission management buttons
+- Recording controls (Start/Stop)
 - Real-time log display with timestamps [HH:mm:ss]
-- Connection status LED indicator
+- Recording status LED indicator
 
-### 5. Security
-- Shizuku permission verification (Shizuku.checkSelfPermission)
-- Permission request flow (Shizuku.requestPermission(0))
-- Shell privilege validation (UID check)
+### 5. Self-Hiding UI
+- MainActivity applies FLAG_SECURE on Android 13+
+- Prevents app's own configuration screens from being captured
+- Ensures clean recordings
 
 ## Required Permissions (AndroidManifest.xml)
-- `moe.shizuku.manager.permission.API_V23` - Shizuku API access
+- `android.permission.SYSTEM_ALERT_WINDOW` - Display overlay
+- `android.permission.FOREGROUND_SERVICE` - Background service
+- `android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION` - MediaProjection service type
 - `android.permission.PROJECT_MEDIA` - Media projection
 - `android.permission.POST_NOTIFICATIONS` - Notifications (Android 13+)
 - `android.permission.WRITE_EXTERNAL_STORAGE` - File storage
 - `android.permission.READ_EXTERNAL_STORAGE` - File access
-- `android.permission.RECORD_AUDIO` - Audio capture
-- `android.permission.FOREGROUND_SERVICE` - Service management
+- `android.permission.RECORD_AUDIO` - Audio capture (optional)
 
 ## Dependencies
 - Kotlin 1.9.20
 - Jetpack Compose (BOM 2024.01.00)
 - Hilt 2.48.1 (Dependency Injection)
-- Shizuku API 13.1.5
 - Android Gradle Plugin 8.2.0
+- MediaProjection API (Android SDK)
 
 ## Running the App
 
-### Setup Shizuku
-1. Install Shizuku app from GitHub or Play Store
-2. Start Shizuku service (via ADB or root)
-3. Grant PrivateEye permission in Shizuku settings
+### First Launch Setup
+1. Launch PrivateEye app
+2. Grant "Display Over Other Apps" permission when prompted
+3. Tap "SETUP SCREEN CAPTURE" to request MediaProjection permission
+4. Accept the screen capture permission dialog
 
 ### Using PrivateEye
-1. Launch PrivateEye app
-2. Check connection status LED (green = connected)
-3. Grant Shizuku permission when prompted
-4. Wait for "Service Connected" log message
-5. Toggle "Ghost Mode" to start/stop recording
-6. View real-time logs in the console
-7. Recordings saved to Download/PrivateEye/
+1. Tap "START OVERLAY" to show the floating controller button
+2. The floating button appears on screen (draggable)
+3. Use either the floating button or in-app "START RECORDING" to begin
+4. Recording status LED turns red when active
+5. Tap "STOP RECORDING" or the floating button to stop
+6. Recordings saved to Download/PrivateEye/
+7. View real-time logs in the console
 
-## AIDL Interface (IPrivateEyeService)
-```java
-interface IPrivateEyeService {
-    int getPid();                           // Get service process ID
-    void captureScreen(String outputPath);  // Single screenshot
-    boolean hasShellPrivileges();           // Check UID 2000
-    void startRecording(String outputPath); // Start video recording
-    void stopRecording();                   // Stop video recording
-    boolean isRecording();                  // Check recording status
-    void destroy();                         // Terminate service
-}
-```
+### Overlay Controls
+- **Start Overlay**: Shows the floating controller button
+- **Stop Overlay**: Hides the floating controller button
+- Floating button can be dragged to any position
+- Button color indicates recording state (red = ready, green = recording)
+
+## Service Architecture
+
+### ScreenRecordingService
+- Foreground service with MediaProjection
+- Creates VirtualDisplay for screen capture
+- MediaCodec encoder with H.264/AVC
+- MediaMuxer writes to MP4 file
+- Handles service lifecycle and cleanup
+
+### OverlayService
+- Manages floating button overlay
+- WindowManager for overlay positioning
+- Touch listener for drag and click
+- Broadcasts recording commands
+- Independent of main activity
+
+## Output Configuration
+
+### Recording Output
+- **Location**: `/storage/emulated/0/Download/PrivateEye/recording_<timestamp>.mp4`
+- **Format**: MP4 container with H.264/AVC video encoding
+- **Resolution**: Matches device screen resolution
+- **Bitrate**: 6 Mbps
+- **Frame Rate**: 30 fps
+- **I-Frame Interval**: 1 second
 
 ## Troubleshooting
 
-### Shizuku Not Running
-- Ensure Shizuku service is started
-- Check ADB connection if using wireless debugging
-- Restart Shizuku service
-
-### Permission Denied
-- Grant Shizuku permission in app settings
-- Check Shizuku permission list
-- Re-request permission via app UI
+### Permission Issues
+- Ensure "Display Over Other Apps" is granted in system settings
+- Check MediaProjection permission was accepted
+- Verify notification permission on Android 13+
 
 ### Recording Fails
-- Verify Shell privileges (UID 2000)
 - Check storage permissions
 - Ensure sufficient storage space
 - Review console logs for error messages
+- Verify MediaProjection permission
+
+### Overlay Not Showing
+- Grant "Display Over Other Apps" permission
+- Restart the app after granting permission
+- Check if overlay service is running
 
 ## Development Notes
 
@@ -167,16 +196,22 @@ interface IPrivateEyeService {
 This project requires:
 - Android SDK for building
 - Physical Android device or emulator for testing
-- Shizuku service running with proper privileges
+- MediaProjection API requires Android 21+ (API level 21)
 
-The code is ready for compilation but requires Android build tools that are not available in this environment.
+The code compiles but requires Android build tools and runtime environment.
+
+### Architecture Changes
+The app now uses MediaProjection API instead of Shizuku for screen recording:
+- **Old**: Shizuku-based SurfaceControl capture (requires root/ADB)
+- **New**: MediaProjection-based capture (standard Android API)
+- Legacy Shizuku code remains in :core-stealth module but is not actively used
 
 ### Next Steps for Development
 1. Open project in Android Studio
 2. Sync Gradle dependencies
-3. Connect Android device with Shizuku
+3. Connect Android device or start emulator
 4. Build and install APK
-5. Test Ghost Mode recording functionality
+5. Test overlay and recording functionality
 6. Review captured video output
 
 ## License
