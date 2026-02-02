@@ -264,7 +264,7 @@ The application follows a modular architecture with three main modules:
 
 ### Legacy Permissions (Not Used)
 - ⚠️ `moe.shizuku.manager.permission.API_V23` - Shizuku API access (legacy, not used)
-- ⚠️ `PROJECT_MEDIA` - Media projection permission (legacy, incorrect permission name)
+- ⚠️ `android.permission.PROJECT_MEDIA` - Media projection permission (legacy, incorrect permission name - MediaProjection doesn't use manifest permissions)
 
 ### Runtime Permissions Flow
 1. **Overlay Permission** - User must grant via Settings.ACTION_MANAGE_OVERLAY_PERMISSION
