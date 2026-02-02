@@ -1,7 +1,7 @@
 # PrivateEye Application Outline
 
 ## Application Overview
-PrivateEye is a modular Android stealth utility application with Shizuku integration for system-level screen capture capabilities. The application leverages SurfaceControl API for stealth capture without MediaProjection and uses Jetpack Compose for the UI.
+PrivateEye is a professional-grade Android screen recording utility with MediaProjection API integration. The application features a floating overlay controller and uses Jetpack Compose for the UI. Recordings are captured using Android's standard MediaProjection API with hardware-accelerated encoding.
 
 ---
 
@@ -10,17 +10,18 @@ PrivateEye is a modular Android stealth utility application with Shizuku integra
 ### Module Structure
 The application follows a modular architecture with three main modules:
 
-1. **:app** - User interface layer (Jetpack Compose)
-2. **:core-stealth** - Shizuku service and capture engine
+1. **:app** - User interface layer (Jetpack Compose) with MediaProjection integration
+2. **:core-stealth** - Legacy Shizuku service and capture engine (deprecated, not used)
 3. **:common** - Shared utilities and logging framework
 
 ### Technology Stack
 - **Language**: Kotlin 1.9.20
 - **UI Framework**: Jetpack Compose (BOM 2024.01.00)
 - **Dependency Injection**: Hilt 2.48.1
-- **IPC**: Shizuku API 13.1.5 with AIDL
-- **Video Encoding**: MediaCodec (H.264/AVC)
+- **Screen Capture**: MediaProjection API (Android standard)
+- **Video Encoding**: MediaCodec (H.264/AVC with COLOR_FormatSurface)
 - **Container Format**: MediaMuxer (MP4)
+- **Overlay System**: WindowManager with TYPE_APPLICATION_OVERLAY
 - **Build System**: Gradle with Kotlin DSL
 - **Min SDK**: Android 26 (Android 8.0)
 
@@ -35,6 +36,7 @@ The application follows a modular architecture with three main modules:
 - **Functions**:
   - `onCreate()` - Initializes the activity and sets up the Compose content
   - Edge-to-edge display support
+  - FLAG_SECURE application (Android 13+) to prevent recording own UI
   - Hilt dependency injection integration via `@AndroidEntryPoint`
 
 #### 2. PrivateEyeApplication.kt
@@ -43,77 +45,98 @@ The application follows a modular architecture with three main modules:
   - `onCreate()` - Application initialization
   - Hilt Android app setup via `@HiltAndroidApp`
 
-#### 3. MainScreen.kt
+#### 3. RecordingScreen.kt
 - **Status**: ✅ Fully Implemented
 - **Functions**:
-  - `MainScreen()` - Main composable for terminal-style interface
-  - `Header()` - Displays app title and LED connection status indicator
-  - `Controls()` - Ghost Mode toggle and Clear Logs button
-  - `Console()` - Scrollable terminal-style log display with auto-scroll
+  - `RecordingScreen()` - Main composable for MediaProjection-based recording interface
+  - `RecordingHeader()` - Displays app title and LED recording status indicator
+  - `RecordingControls()` - Permission buttons, overlay controls, and recording buttons
+  - `RecordingConsole()` - Scrollable terminal-style log display with auto-scroll
 - **Features**:
   - Pure black background (#000000) with Matrix Green (#00FF00) theme
-  - Real-time connection status LED (green = connected, red = disconnected)
-  - Ghost Mode toggle switch
-  - Auto-scrolling console with timestamped logs
+  - Real-time recording status LED (red = recording, green = ready)
+  - Overlay permission and MediaProjection permission request buttons
+  - Overlay service start/stop controls
+  - Recording start/stop buttons
+  - Auto-scrolling console with timestamped logs [HH:mm:ss]
+  - Clear logs functionality
 
-#### 4. MainViewModel.kt
+#### 4. RecordingViewModel.kt
 - **Status**: ✅ Fully Implemented
 - **Functions**:
-  - `toggleGhostMode()` - Starts/stops stealth recording
-  - `startRecording()` - Initiates screen recording with output path generation
+  - `requestOverlayPermission()` - Opens system settings for overlay permission
+  - `requestMediaProjection()` - Launches MediaProjection permission dialog
+  - `handleMediaProjectionResult()` - Stores MediaProjection permission result
+  - `startRecording()` - Starts ScreenRecordingService with MediaProjection data
   - `stopRecording()` - Stops active recording
+  - `startOverlayService()` - Shows floating overlay button
+  - `stopOverlayService()` - Hides floating overlay button
+  - `checkOverlayPermission()` - Verifies overlay permission status
   - `addLog()` - Adds timestamped log entries [HH:mm:ss] format
   - `clearLogs()` - Clears console logs
-  - `checkShizukuStatus()` - Verifies Shizuku running status and permissions
-  - `requestShizukuPermission()` - Requests Shizuku API permission
-  - `reconnect()` - Re-establishes Shizuku connection
 - **State Management**:
-  - `isGhostModeActive` - Ghost Mode on/off state
-  - `isShizukuConnected` - Shizuku service connection state
+  - `isRecording` - Recording on/off state
+  - `hasOverlayPermission` - Overlay permission status
   - `consoleLogs` - List of timestamped console log messages
-- **Callbacks**:
-  - `ConnectionCallback` - Handles service connection events
-  - `RecordingCallback` - Handles recording lifecycle events
+  - `mediaProjectionResultCode` - Stored MediaProjection permission result code
+  - `mediaProjectionResultData` - Stored MediaProjection permission data
+- **Broadcast Receivers**:
+  - Listens for ACTION_START_RECORDING from OverlayService
+  - Listens for ACTION_STOP_RECORDING from OverlayService
 
-#### 5. UI Components
+#### 5. Services
 
-##### a. DashboardScreen.kt
-- **Status**: ⚠️ Implemented but Unused (Alternative UI)
+##### a. ScreenRecordingService.kt
+- **Status**: ✅ Fully Implemented
 - **Functions**:
-  - `DashboardScreen()` - Alternative Material Design interface
-  - `StatusRow()` - Status indicator row component
+  - `onStartCommand()` - Handles start/stop recording commands
+  - `startRecording()` - Initializes MediaProjection recording pipeline
+  - `stopRecording()` - Stops recording and cleans up resources
+  - `initializeMediaCodec()` - Configures H.264/AVC encoder with COLOR_FormatSurface
+  - `encodeLoop()` - Background thread for processing encoded frames
+  - `createNotificationChannel()` - Sets up notification channel
+  - `createNotification()` - Creates foreground service notification
 - **Features**:
-  - Material 3 design with TopAppBar
-  - Shizuku status card with multiple status indicators
-  - Control buttons (Request Permission, Bind Service, Capture Screen, Clear Logs)
-  - Terminal console integration
-- **Note**: This appears to be an alternative/experimental UI that is not currently used in MainActivity
+  - Foreground service with mediaProjection service type
+  - MediaProjection instance creation and management
+  - VirtualDisplay for screen capture
+  - MediaCodec with COLOR_FormatSurface for hardware-accelerated encoding
+  - MediaMuxer for MP4 output
+  - Notification with Stop action button
+  - Native device resolution capture
+  - 6 Mbps bitrate, 30 fps frame rate
 
-##### b. DashboardViewModel.kt
-- **Status**: ⚠️ Implemented but Unused
+##### b. OverlayService.kt
+- **Status**: ✅ Fully Implemented
 - **Functions**:
-  - `checkShizukuStatus()` - Checks and updates Shizuku status
-  - `requestShizukuPermission()` - Requests Shizuku permission
-  - `bindService()` - Binds to Shizuku service
-  - `captureScreen()` - Captures single screenshot
-  - `clearLogs()` - Clears logs
-- **State Management**:
-  - `logs` - Log entries from Logger
-  - `shizukuStatus` - ShizukuStatus data class with isInstalled, isRunning, hasPermission, isServiceBound
-- **Note**: Associated with unused DashboardScreen
-
-##### c. TerminalConsole.kt
-- **Status**: ⚠️ Implemented but Unused
-- **Functions**:
-  - `TerminalConsole()` - Terminal-style console component
-  - `LogLine()` - Individual log line with color coding by level
+  - `onStartCommand()` - Handles service start
+  - `setupFloatingButton()` - Creates draggable floating action button
+  - `toggleRecording()` - Broadcasts recording start/stop commands
+  - `updateButtonState()` - Updates button appearance based on recording state
+  - `onDestroy()` - Removes floating button
 - **Features**:
-  - Auto-scroll to latest logs
-  - Color-coded log levels (DEBUG, INFO, WARNING, ERROR)
-  - Monospace font for terminal aesthetic
-- **Note**: Built for DashboardScreen, replaced by inline Console in MainScreen
+  - WindowManager-based floating button
+  - TYPE_APPLICATION_OVERLAY window type
+  - FLAG_NOT_FOCUSABLE and FLAG_LAYOUT_IN_SCREEN flags
+  - Draggable to any screen position
+  - Button color changes based on recording state (red = ready, green = recording)
+  - Broadcasts to coordinate with RecordingViewModel
 
-#### 6. UI Theme
+#### 6. Legacy Components (Not Currently Used)
+
+##### a. MainScreen.kt
+- **Status**: ⚠️ Implemented but Unused (Legacy Shizuku UI)
+- **Note**: This was the old Ghost Mode interface for Shizuku-based recording
+- **Components**: Ghost Mode toggle, Shizuku connection status
+- **Replaced by**: RecordingScreen.kt
+
+##### b. MainViewModel.kt
+- **Status**: ⚠️ Implemented but Unused (Legacy Shizuku ViewModel)
+- **Note**: This was the ViewModel for Shizuku-based recording
+- **Features**: Ghost Mode toggle, Shizuku service connection
+- **Replaced by**: RecordingViewModel.kt
+
+#### 7. UI Theme
 
 ##### a. Color.kt
 - **Status**: ✅ Fully Implemented
@@ -148,12 +171,14 @@ The application follows a modular architecture with three main modules:
 
 ---
 
-## Module 2: :core-stealth (Stealth Capture Engine)
+## Module 2: :core-stealth (Legacy Shizuku Engine - DEPRECATED)
 
-### Implemented and Functional Components
+**⚠️ IMPORTANT**: This module contains the legacy Shizuku-based implementation and is **NO LONGER USED** in the current application. The app now uses the standard MediaProjection API instead. This module is kept for reference but is not actively maintained or integrated.
+
+### Legacy Components (Not Used)
 
 #### 1. IPrivateEyeService.aidl
-- **Status**: ✅ Fully Implemented
+- **Status**: ⚠️ Legacy/Unused
 - **Interface Methods**:
   - `int getPid()` - Returns service process ID
   - `void captureScreen(String outputPath)` - Captures single screenshot
@@ -162,98 +187,32 @@ The application follows a modular architecture with three main modules:
   - `void stopRecording()` - Stops video recording
   - `boolean isRecording()` - Checks recording status
   - `void destroy()` - Terminates service
+- **Note**: AIDL interface for Shizuku IPC, not used in current MediaProjection implementation
 
 #### 2. PrivateEyeUserService.kt
-- **Status**: ⚠️ Partially Implemented (Core Complete, Some Functions Need Work)
-- **Fully Implemented Functions**:
-  - `getPid()` - Returns process ID
-  - `hasShellPrivileges()` - Verifies Shell UID (2000)
-  - `captureScreen()` - Single screenshot with fallback mechanisms
-  - `captureScreenViaSurfaceControl()` - SurfaceControl-based stealth capture via reflection
-  - `getDisplayToken()` - Gets display token for SurfaceControl
-  - `destroy()` - Service cleanup and termination
-  - `log()` - Internal logging helper
-
-- **Partially Implemented Functions**:
-  - `startRecording()` - ⚠️ Starts recording but video encoding needs work
-    - ✅ Creates output directory
-    - ✅ Initializes MediaCodec encoder
-    - ✅ Sets up MediaMuxer
-    - ✅ Starts capture thread
-    - ❌ Actual frame capture using SurfaceControl incomplete
-  
-  - `initializeEncoder()` - ✅ Fully sets up H.264/AVC encoder
-    - MediaFormat configuration (1080x1920, 6Mbps, 30fps)
-    - MediaCodec initialization
-    - MediaMuxer setup for MP4 output
-  
-  - `captureLoop()` - ⚠️ Main recording loop structure present but incomplete
-    - ✅ Loop structure and frame rate control
-    - ✅ Frame counting and logging
-    - ❌ `captureFrameData()` uses screencap command as placeholder
-    - ❌ Proper SurfaceControl frame capture not implemented
-  
-  - `captureFrameData()` - ❌ **PLACEHOLDER IMPLEMENTATION**
-    - Currently uses `screencap` command which is not true stealth
-    - TODO: Implement proper SurfaceControl-based frame capture
-  
-  - `encodeFrame()` - ⚠️ Basic implementation present
-    - ✅ MediaCodec input/output buffer handling
-    - ✅ Track addition and muxer start
-    - ⚠️ Needs proper frame data formatting
-  
-  - `stopRecording()` - ✅ Fully implemented
-    - Stops recording flag
-    - Waits for recording thread
-    - Calls cleanup
-  
-  - `finalizeRecording()` - ✅ Fully implemented
-    - Stops and releases MediaCodec
-    - Stops and releases MediaMuxer
-
-- **Constants**:
-  - PRIMARY_DISPLAY_ID = 0
-  - VIDEO_WIDTH = 1080
-  - VIDEO_HEIGHT = 1920
-  - VIDEO_BIT_RATE = 6000000 (6 Mbps)
-  - VIDEO_FRAME_RATE = 30
-  - VIDEO_I_FRAME_INTERVAL = 1
-  - MIME_TYPE = "video/avc" (H.264)
+- **Status**: ⚠️ Legacy/Unused - Shizuku-based service
+- **Note**: This service was designed to run with Shizuku privileges and use SurfaceControl API via reflection. The current implementation uses MediaProjection instead, which is a standard Android API that doesn't require elevated privileges.
+- **Legacy Features**:
+  - Shell privilege verification
+  - SurfaceControl-based capture via reflection
+  - Single screenshot capture
+  - Video recording (incomplete implementation)
 
 #### 3. PrivateEyeConnector.kt
-- **Status**: ✅ Fully Implemented
-- **Implements**: Shizuku.OnBinderReceivedListener, Shizuku.OnBinderDeadListener
-- **Functions**:
-  - `initialize()` - Registers Shizuku listeners
-  - `cleanup()` - Unregisters Shizuku listeners
-  - `connect()` - Binds to PrivateEyeUserService via Shizuku
-  - `disconnect()` - Unbinds from service
-  - `getService()` - Returns current service instance
-  - `isConnected()` - Checks connection status
-  - `startRecording()` - Starts recording with callback
-  - `stopRecording()` - Stops recording with callback
-  - `isRecording()` - Checks recording status
-  - `onBinderReceived()` - Shizuku binder received callback
-  - `onBinderDead()` - Shizuku binder dead callback
-- **Service Connection**:
-  - `onServiceConnected()` - Handles successful service binding
-  - `onServiceDisconnected()` - Handles service disconnection
-- **Callbacks**:
-  - ConnectionCallback (onConnected, onDisconnected, onError, onLog)
-  - RecordingCallback (onRecordingStarted, onRecordingStopped, onError, onLog)
+- **Status**: ⚠️ Legacy/Unused
+- **Note**: Connector for Shizuku service binding. Not used in MediaProjection implementation.
+- **Legacy Features**:
+  - Shizuku listener registration
+  - Service binding/unbinding
+  - Connection callbacks
 
 #### 4. ShizukuManager.kt
-- **Status**: ⚠️ Implemented but Not Used in Main Flow
-- **Functions**:
-  - `isShizukuInstalled()` - Checks if Shizuku app is installed
-  - `isShizukuRunning()` - Checks if Shizuku service is running
-  - `hasShizukuPermission()` - Checks Shizuku permission status
-  - `requestShizukuPermission()` - Requests Shizuku permission
-  - `bindService()` - Binds to PrivateEyeUserService
-  - `unbindService()` - Unbinds from service
-  - `captureScreen()` - Captures single screenshot
-  - `getService()` - Returns service instance
-- **Note**: This manager exists but MainViewModel uses PrivateEyeConnector directly instead
+- **Status**: ⚠️ Legacy/Unused
+- **Note**: Manager for Shizuku integration. Not used in MediaProjection implementation.
+- **Legacy Features**:
+  - Shizuku installation/running checks
+  - Permission management
+  - Service binding
 
 ---
 
@@ -295,13 +254,23 @@ The application follows a modular architecture with three main modules:
 ## Permissions (AndroidManifest.xml)
 
 ### Required Permissions
-- ✅ `moe.shizuku.manager.permission.API_V23` - Shizuku API access
-- ⚠️ `android.permission.PROJECT_MEDIA` - Media projection (Note: This may be a non-standard permission name. Standard Android permissions typically use names like `WRITE_MEDIA_STORAGE` or require MediaProjection API setup. Should verify this permission is correct.)
-- ✅ `android.permission.POST_NOTIFICATIONS` - Notifications (Android 13+)
-- ✅ `android.permission.WRITE_EXTERNAL_STORAGE` - File storage
-- ✅ `android.permission.READ_EXTERNAL_STORAGE` - File access
-- ✅ `android.permission.RECORD_AUDIO` - Audio capture
-- ✅ `android.permission.FOREGROUND_SERVICE` - Service management
+- ✅ `SYSTEM_ALERT_WINDOW` - Display overlay floating button (runtime permission via Settings)
+- ✅ `FOREGROUND_SERVICE` - Background recording service
+- ✅ `FOREGROUND_SERVICE_MEDIA_PROJECTION` - MediaProjection service type (Android 14+)
+- ✅ `POST_NOTIFICATIONS` - Show recording notification (Android 13+)
+- ✅ `WRITE_EXTERNAL_STORAGE` - File storage (maxSdkVersion 32)
+- ✅ `READ_EXTERNAL_STORAGE` - File access (maxSdkVersion 32)
+- ✅ `RECORD_AUDIO` - Audio capture (optional, if user wants audio in recordings)
+
+### Legacy Permissions (Not Used)
+- ⚠️ `moe.shizuku.manager.permission.API_V23` - Shizuku API access (legacy, not used)
+- ⚠️ `android.permission.PROJECT_MEDIA` - Media projection permission (legacy, incorrect permission name - MediaProjection doesn't use manifest permissions)
+
+### Runtime Permissions Flow
+1. **Overlay Permission** - User must grant via Settings.ACTION_MANAGE_OVERLAY_PERMISSION
+2. **MediaProjection Permission** - User must grant via MediaProjectionManager screen capture intent
+3. **Storage Permissions** - Automatically granted on Android 10+ with scoped storage
+4. **Notification Permission** - Requested at runtime on Android 13+
 
 ---
 
@@ -309,116 +278,264 @@ The application follows a modular architecture with three main modules:
 
 ### ✅ Fully Functional Features
 
-1. **Shizuku Integration**
-   - Permission checking and requesting
-   - Service binding with elevated privileges
-   - Automatic reconnection handling
-   - Binder lifecycle management
+1. **MediaProjection Integration**
+   - Standard Android screen capture API
+   - Permission dialog integration
+   - No root or special setup required
+   - Works on all Android devices (API 26+)
 
-2. **User Interface**
+2. **Floating Overlay Controller**
+   - WindowManager-based floating action button
+   - Draggable to any screen position
+   - Visual feedback (color changes based on recording state)
+   - Always-on-top during recording
+   - Broadcasts start/stop commands to app
+
+3. **User Interface**
    - Matrix-themed terminal UI with pure black background
-   - Real-time connection status LED indicator
-   - Ghost Mode toggle switch
+   - Real-time recording status LED indicator (red = recording, green = ready)
+   - Permission management buttons (Overlay, MediaProjection)
+   - Overlay service controls (Start/Stop overlay)
+   - Recording controls (Start/Stop recording)
    - Auto-scrolling console with timestamped logs [HH:mm:ss]
    - Clear logs functionality
 
-3. **Single Screenshot Capture**
-   - SurfaceControl-based stealth capture (via reflection)
-   - Fallback to screencap command
-   - PNG output format
-   - Shell privilege verification
+4. **Screen Recording**
+   - High-quality video recording using MediaProjection
+   - Hardware-accelerated encoding (COLOR_FormatSurface)
+   - H.264/AVC video codec
+   - MP4 container format
+   - Native device resolution capture
+   - 6 Mbps bitrate, 30 fps frame rate
+   - Foreground service with notification
+   - Stop action in notification
 
-4. **Security**
-   - Shizuku permission verification
-   - Shell UID (2000) privilege checking
-   - Process ID tracking
-   - Secure service binding
+5. **UI Self-Exclusion**
+   - FLAG_SECURE applied to MainActivity (Android 13+)
+   - App's own UI automatically excluded from recordings
+   - Clean output without configuration screens
+   - MediaProjection respects FLAG_SECURE
 
-5. **Logging System**
+6. **Logging System**
    - Centralized Logger with StateFlow
-   - Color-coded log levels
-   - Timestamped entries
-   - Android Logcat integration
+   - Timestamped entries [HH:mm:ss]
+   - Real-time console display
+   - Transparent operation logging
 
-6. **Architecture**
+7. **Architecture**
    - Modular design (app, core-stealth, common)
    - Hilt dependency injection
-   - AIDL for IPC
    - Clean separation of concerns
+   - StateFlow for reactive UI
+   - Service-based background processing
 
-### ⚠️ Partially Implemented Features
+### ⚠️ Legacy Features (No Longer Used)
 
-1. **Video Recording (Ghost Mode)**
-   - ✅ Recording UI and state management
-   - ✅ MediaCodec H.264/AVC encoder setup
-   - ✅ MediaMuxer MP4 container
-   - ✅ Recording lifecycle (start/stop)
-   - ✅ Frame rate control (30 fps)
-   - ❌ **CRITICAL**: Proper SurfaceControl frame capture incomplete
-   - ❌ **CRITICAL**: `captureFrameData()` uses placeholder screencap command
-   - ❌ Frame data conversion and encoding needs work
-   - ❌ True stealth capture without MediaProjection not fully working
+1. **Shizuku Integration** (Deprecated)
+   - Old implementation used Shizuku for elevated privileges
+   - Required ADB setup or root access
+   - Replaced by standard MediaProjection API
 
-### ❌ Non-Functional / Placeholder Components
+2. **Ghost Mode** (Removed)
+   - Previous "stealth" mode using SurfaceControl
+   - Required reflection and shell privileges
+   - No longer needed with MediaProjection approach
 
-1. **DashboardScreen.kt** - Alternative UI not used
-2. **DashboardViewModel.kt** - ViewModel for unused Dashboard
-3. **TerminalConsole.kt** - Component built for Dashboard, replaced in MainScreen
-4. **ShizukuManager.kt** - Manager implemented but not used (PrivateEyeConnector used instead)
-5. **captureFrameData()** in PrivateEyeUserService - **PLACEHOLDER**: Uses screencap command instead of proper SurfaceControl API
+3. **SurfaceControl Capture** (Deprecated)
+   - Low-level API access via reflection
+   - Fragile and version-dependent
+   - Replaced by stable MediaProjection API
+
+### ❌ Not Implemented
+
+1. **Audio Recording** - RECORD_AUDIO permission exists but audio capture not yet implemented
+2. **Quality Settings** - Fixed bitrate and resolution (no user configuration)
+3. **Pause/Resume** - Recording must be stopped and restarted
+4. **Video Editing** - No built-in trimming or editing features
 
 ---
 
 ## Output Configuration
 
 ### Recording Output
-- **Location**: `/storage/emulated/0/Download/PrivateEye/capture_<timestamp>.mp4`
+- **Location**: `/storage/emulated/0/Download/PrivateEye/recording_<timestamp>.mp4`
 - **Format**: MP4 container with H.264/AVC video encoding
-- **Resolution**: 1080x1920
+- **Resolution**: Native device screen resolution (e.g., 1080x1920, 1440x3040)
 - **Bitrate**: 6 Mbps
 - **Frame Rate**: 30 fps
 - **I-Frame Interval**: 1 second
+- **Color Format**: COLOR_FormatSurface (hardware-accelerated)
+- **Encoding**: Hardware MediaCodec encoder
 
-### Screenshot Output
-- **Location**: Specified by caller (typically in PrivateEye folder)
-- **Format**: PNG
+### File Naming Convention
+- **Pattern**: `recording_<unix_timestamp_milliseconds>.mp4`
+- **Example**: `recording_1738456789123.mp4`
+  - Unix timestamp: 1738456789123 ms
+  - Represents: 2026-02-01 12:33:09 UTC
+
+### Storage Requirements
+- **6 Mbps bitrate** = ~45 MB per minute
+- 10-minute recording ≈ 450 MB
+- 1-hour recording ≈ 2.7 GB
 
 ---
 
-## Critical Issues and Limitations
+## Current State and Limitations
 
-### 🔴 Critical Issues
+### ✅ Working Functionality
 
-1. **Video Recording Implementation Incomplete**
-   - The `captureFrameData()` function in PrivateEyeUserService uses screencap command as a placeholder
-   - True stealth capture using SurfaceControl for video recording is not implemented
-   - The current implementation won't produce functional video recordings
-   - This defeats the main "stealth" purpose of the application
+1. **MediaProjection Recording**
+   - Full screen recording using standard Android API
+   - Hardware-accelerated encoding
+   - High-quality MP4 output
+   - Foreground service with notification
+   - Stable and reliable
 
-2. **Frame Data Encoding**
-   - Even if frames were captured, the current encoding pipeline may not properly handle the data format
-   - MediaCodec COLOR_FormatSurface is configured but not used with an actual Surface
+2. **Floating Overlay**
+   - Draggable floating button
+   - Always accessible during recording
+   - Visual feedback for recording state
+   - Does not interfere with other apps
+
+3. **UI Self-Exclusion**
+   - App's own UI excluded from recordings (Android 13+)
+   - Clean output without configuration screens
+   - Automatic via FLAG_SECURE
 
 ### ⚠️ Known Limitations
 
-1. **Unused Components**
-   - Alternative UI components (DashboardScreen, DashboardViewModel, TerminalConsole) exist but are not integrated
-   - ShizukuManager exists but is not used; PrivateEyeConnector is used instead
-   - This creates code redundancy and maintenance overhead
+1. **Android Version Compatibility**
+   - FLAG_SECURE self-exclusion requires Android 13+ (API 33+)
+   - On older versions, app UI may appear in recordings
+   - MediaProjection works on all versions API 26+
 
-2. **Android Version Compatibility**
-   - SurfaceControl API usage varies by Android version
-   - Reflection is used to access hidden APIs which may break on future Android versions
-   - No audio recording implementation (despite RECORD_AUDIO permission)
+2. **DRM and Secure Content**
+   - Cannot record DRM-protected content (Netflix, Disney+, etc.)
+   - Cannot record apps with FLAG_SECURE enabled
+   - This is by design for security and copyright protection
 
-3. **Error Handling**
-   - Limited error recovery in recording pipeline
-   - No retry mechanism for failed captures
+3. **Audio Recording**
+   - RECORD_AUDIO permission exists but not implemented yet
+   - Video-only recordings currently
+   - TODO: Add audio capture (microphone or system audio)
 
-4. **Performance**
-   - No frame skipping or adaptive quality
-   - Fixed 30 fps may be too high for some devices
-   - No battery optimization considerations
+4. **User Configuration**
+   - Fixed resolution (native device resolution)
+   - Fixed bitrate (6 Mbps)
+   - Fixed frame rate (30 fps)
+   - TODO: Add settings UI for quality options
+
+5. **Battery and Performance**
+   - Foreground service keeps screen on
+   - Hardware encoding is efficient but still drains battery
+   - No battery optimization or frame skipping
+   - 30 fps may be too high for some devices
+
+6. **Storage Management**
+   - No automatic cleanup of old recordings
+   - No storage space checking before recording
+   - Large files can fill storage quickly (45 MB/minute)
+
+### 🔴 Breaking Changes from Legacy Version
+
+1. **Shizuku No Longer Required**
+   - Old version required Shizuku app installation
+   - Old version required ADB setup or root
+   - New version uses standard MediaProjection (no special setup)
+
+2. **Ghost Mode Removed**
+   - "Ghost Mode" toggle no longer exists
+   - Old stealth SurfaceControl approach deprecated
+   - New approach uses standard MediaProjection with user consent
+
+3. **Permission Flow Changed**
+   - Old: Shizuku permission required
+   - New: Overlay permission + MediaProjection permission
+   - New approach is more user-friendly
+
+4. **Screenshot Feature Removed**
+   - Old version supported single screenshot capture
+   - New version is video recording only
+   - Can be added back if needed
+
+### 🏗️ Architecture Changes
+
+1. **Core Module Deprecated**
+   - `:core-stealth` module still exists but is unused
+   - All Shizuku-related code is legacy
+   - Can be removed in future cleanup
+
+2. **New Services Added**
+   - `ScreenRecordingService` - MediaProjection recording
+   - `OverlayService` - Floating controller
+   - Both replace old Shizuku service approach
+
+3. **ViewModels Replaced**
+   - `MainViewModel` → `RecordingViewModel`
+   - `MainScreen` → `RecordingScreen`
+   - Old files still exist but are not used
+
+---
+
+## User Flow
+
+### Initial Setup
+1. **Launch PrivateEye**
+   - App displays Matrix-themed terminal interface
+   - Console shows initialization message
+
+2. **Grant Overlay Permission**
+   - Tap "GRANT OVERLAY PERMISSION" button
+   - System opens Settings page for overlay permission
+   - User enables "Display over other apps"
+   - Return to PrivateEye
+
+3. **Setup MediaProjection**
+   - Tap "SETUP SCREEN CAPTURE" button
+   - Android shows MediaProjection permission dialog
+   - Dialog warns: "PrivateEye will start capturing everything that's displayed on your screen"
+   - User taps "Start Now" to grant permission
+   - Console logs permission granted
+
+### Recording Session
+
+#### Method 1: In-App Controls
+1. Tap "START RECORDING" button in app
+2. ScreenRecordingService starts with notification
+3. Status LED turns red
+4. Recording begins, all screen content captured (except PrivateEye UI)
+5. Notification shows "PrivateEye Recording" with Stop button
+6. Tap "STOP RECORDING" button in app or notification
+7. Recording stops and file is saved
+8. Console shows output path: `/storage/emulated/0/Download/PrivateEye/recording_<timestamp>.mp4`
+
+#### Method 2: Floating Overlay
+1. Tap "START OVERLAY" button
+2. Floating red button appears on screen (draggable)
+3. Tap floating button to start recording
+4. Button turns green during recording
+5. Can drag button to any position while recording
+6. Tap floating button again to stop recording
+7. Tap "STOP OVERLAY" to remove floating button
+
+### Console Logging
+All operations are logged with timestamps in [HH:mm:ss] format:
+```
+[12:34:56] PrivateEye MediaProjection Recorder initialized
+[12:34:58] [System] Overlay permission granted
+[12:35:02] [System] Requesting MediaProjection permission
+[12:35:05] [System] MediaProjection permission granted
+[12:35:05] [Info] Ready to start recording
+[12:35:10] [System] Overlay service started
+[12:35:15] [Recording] Started: /storage/emulated/0/Download/PrivateEye/recording_1738456515000.mp4
+[12:36:20] [Recording] Stopped
+```
+
+### Managing Recordings
+- Recordings saved to: `/storage/emulated/0/Download/PrivateEye/`
+- Files named: `recording_<timestamp>.mp4`
+- Can be viewed in Files app or Gallery
+- Can be shared, uploaded, or deleted manually
 
 ---
 
@@ -449,21 +566,41 @@ The application follows a modular architecture with three main modules:
 
 ## Summary
 
-**Total Files Analyzed**: 16 Kotlin source files + 3 AndroidManifest + 4 build.gradle.kts + AIDL interface
+**Total Components**: RecordingScreen, RecordingViewModel, ScreenRecordingService, OverlayService, MainActivity, plus legacy components
 
 **Implementation Status**:
-- ✅ **Fully Functional**: ~75% (UI, Shizuku integration, single screenshot, logging, architecture)
-- ⚠️ **Partially Implemented**: ~20% (Video recording structure exists but core capture incomplete)
-- ❌ **Non-Functional/Unused**: ~5% (Alternative UI components, unused manager)
+- ✅ **Fully Functional**: ~95% (MediaProjection recording, floating overlay, UI, logging, architecture)
+- ⚠️ **Not Yet Implemented**: ~5% (Audio recording, quality settings, storage management)
+- 🗑️ **Deprecated/Legacy**: Shizuku-based components in :core-stealth module
 
-**Critical Gap**: The core stealth video recording feature is not fully functional. The application can successfully:
-- Connect to Shizuku with elevated privileges
-- Display a polished terminal-style UI
-- Capture single screenshots using SurfaceControl
-- Manage recording state and UI
+**Current State**: The application is **fully functional** as a professional screen recording utility using Android's standard MediaProjection API. Key features include:
 
-However, it **cannot** currently:
-- Record video using true SurfaceControl capture (uses placeholder screencap)
-- Produce functional MP4 video files from screen recording
+✅ **Working Features**:
+- High-quality screen recording with MediaProjection
+- Floating overlay controller that stays on top
+- Hardware-accelerated video encoding
+- UI self-exclusion (Android 13+)
+- Foreground service with notification
+- Matrix-themed terminal interface
+- Real-time logging console
+- MP4 video output
 
-**Recommended Priority**: Implement proper SurfaceControl-based frame capture in `captureFrameData()` to complete the core stealth recording functionality.
+❌ **Not Yet Implemented**:
+- Audio recording (permission exists, feature not implemented)
+- User-configurable quality settings
+- Storage space management
+- Pause/resume functionality
+
+**Recommended Next Steps**:
+1. Implement audio recording (microphone and/or system audio)
+2. Add quality settings UI (resolution, bitrate, frame rate)
+3. Add storage space checking and cleanup
+4. Remove deprecated :core-stealth module
+5. Add pause/resume recording
+6. Implement screenshot mode (single frame capture)
+
+**Comparison to Legacy Implementation**:
+- **Old**: Shizuku + SurfaceControl + reflection + root/ADB required + incomplete implementation
+- **New**: MediaProjection + standard APIs + no root required + fully working + user-friendly
+
+The new implementation is more stable, maintainable, and user-friendly than the previous Shizuku-based approach.
